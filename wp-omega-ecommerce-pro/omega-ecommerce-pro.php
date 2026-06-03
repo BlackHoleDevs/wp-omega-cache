@@ -1,12 +1,15 @@
 <?php
 /**
  * Plugin Name: OmegaDrive E-Commerce Pro (TCP Edition)
- * Version: 1.5.0 (Hyper-Early Cache)
+ * Version: 1.5.0
+ * Description: High-performance caching and front-end optimization engine for WooCommerce, powered by the OmegaDrive database and reverse-proxy.
+ * Author: exmoond
+ * License: GPLv2 or later
+ * License URI: http://www.gnu.org/licenses/gpl-2.0.html
  */
 
 if (!defined('ABSPATH')) exit;
 
-error_log("🚀 OMEGA ECO PRO LOADED");
 opcache_reset();
 
 require_once plugin_dir_path(__FILE__) . 'includes/class-omega-connector.php';
@@ -14,10 +17,22 @@ require_once plugin_dir_path(__FILE__) . 'includes/class-omega-connector.php';
 class Omega_Ecommerce_Pro {
     private $connector;
 
+    private function log_debug($message, $file = 'debug') {
+        if (!get_option('omega_enable_debug', 0)) {
+            return;
+        }
+        $log_file = plugin_dir_path(__FILE__) . ($file === 'core' ? 'core_debug.log' : 'debug.log');
+        // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+        @file_put_contents($log_file, $message . "\n", FILE_APPEND);
+    }
+
     public function __construct() {
         $has_fired = function_exists('did_action') && did_action('plugins_loaded');
         $host = get_option('omega_drive_host', '172.19.0.1');
         $this->connector = new Omega_Connector($host, 6380);
+
+        $this->log_debug("1. CONSTRUCT CALLED");
+        $this->log_debug("URI: " . (isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '') . " | FOUND OMEGA: " . __FILE__, 'core');
 
         if ($has_fired) {
             $this->serve_cache();
@@ -31,9 +46,46 @@ class Omega_Ecommerce_Pro {
         add_filter('script_loader_tag', [$this, 'defer_scripts'], 10, 3);
         add_action('wp_enqueue_scripts', [$this, 'dequeue_unneeded_scripts'], 9999);
 
+        add_action('update_option_omega_enable_debug', function($old_value, $value) {
+            if (!$value) {
+                $debug_log = plugin_dir_path(__FILE__) . 'debug.log';
+                $core_log = plugin_dir_path(__FILE__) . 'core_debug.log';
+                if (file_exists($debug_log)) {
+                    @unlink($debug_log);
+                }
+                if (file_exists($core_log)) {
+                    @unlink($core_log);
+                }
+            }
+        }, 10, 2);
+
         if (is_admin()) {
             add_action('admin_menu', [$this, 'admin_menu']);
             add_action('admin_init', [$this, 'register_settings']);
+
+            // Speed up WooCommerce & WordPress Admin Dashboard
+            if (get_option('omega_disable_analytics', 0)) {
+                add_filter('woocommerce_admin_disabled', '__return_true');
+            }
+
+            $heartbeat = get_option('omega_heartbeat_control', 'modify');
+            if ($heartbeat === 'disable') {
+                add_action('init', function() {
+                    wp_deregister_script('heartbeat');
+                }, 1);
+            } elseif ($heartbeat === 'modify') {
+                add_filter('heartbeat_settings', function($settings) {
+                    $settings['interval'] = 120;
+                    return $settings;
+                });
+            }
+
+            if (get_option('omega_disable_suggestions', 0)) {
+                add_filter('woocommerce_helper_connect_to_woocommerce_helper', '__return_false');
+                add_filter('woocommerce_show_admin_notice', '__return_false');
+                add_filter('woocommerce_allow_marketplace_suggestions', '__return_false');
+                add_filter('woocommerce_show_addons', '__return_false');
+            }
         }
     }
 
@@ -42,50 +94,389 @@ class Omega_Ecommerce_Pro {
     }
 
     public function register_settings() {
-        register_setting('omegadrive_options_group', 'omega_drive_host');
+        register_setting('omegadrive_options_group', 'omega_drive_host', [
+            'sanitize_callback' => 'sanitize_text_field',
+        ]);
+        register_setting('omegadrive_options_group', 'omega_disable_analytics', [
+            'sanitize_callback' => 'absint',
+        ]);
+        register_setting('omegadrive_options_group', 'omega_heartbeat_control', [
+            'sanitize_callback' => 'sanitize_text_field',
+        ]);
+        register_setting('omegadrive_options_group', 'omega_disable_suggestions', [
+            'sanitize_callback' => 'absint',
+        ]);
+        register_setting('omegadrive_options_group', 'omega_enable_debug', [
+            'sanitize_callback' => 'absint',
+        ]);
     }
 
     public function settings_page() {
+        // Test connection to OmegaDrive Matrix
+        $ping_success = false;
+        $latency = 0;
+        if ($this->connector) {
+            $start = microtime(true);
+            $this->connector->set('omega_ping_test', '1');
+            $val = $this->connector->get('omega_ping_test');
+            if ($val === '1') {
+                $ping_success = true;
+                $latency = round((microtime(true) - $start) * 1000, 2);
+            }
+        }
+
+        $flush_status = null;
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+        if (isset($_POST['omega_flush_db_btn'])) {
+            check_admin_referer('omega_flush_db_action', 'omega_flush_db_nonce');
+            if ($this->connector) {
+                if ($this->connector->flush()) {
+                    $flush_status = 'success';
+                } else {
+                    $flush_status = 'error';
+                }
+            }
+        }
         ?>
-        <div class="wrap">
-            <h2>OmegaDrive Configuration</h2>
+        <style>
+            .omega-dashboard {
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+                background: #0f172a;
+                color: #f8fafc;
+                border-radius: 12px;
+                padding: 24px;
+                max-width: 800px;
+                margin: 20px 0;
+                box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
+            }
+            .omega-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                border-bottom: 1px solid #334155;
+                padding-bottom: 16px;
+                margin-bottom: 24px;
+            }
+            .omega-title {
+                font-size: 24px;
+                font-weight: 700;
+                margin: 0;
+                background: linear-gradient(135deg, #a78bfa 0%, #3b82f6 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+            }
+            .omega-badge {
+                padding: 6px 12px;
+                border-radius: 20px;
+                font-size: 12px;
+                font-weight: 600;
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+            .omega-badge-success {
+                background: rgba(16, 185, 129, 0.15);
+                color: #34d399;
+                border: 1px solid rgba(16, 185, 129, 0.3);
+            }
+            .omega-badge-error {
+                background: rgba(239, 68, 68, 0.15);
+                color: #f87171;
+                border: 1px solid rgba(239, 68, 68, 0.3);
+            }
+            .omega-section {
+                background: #1e293b;
+                border-radius: 8px;
+                padding: 20px;
+                margin-bottom: 20px;
+                border: 1px solid #334155;
+            }
+            .omega-section-title {
+                font-size: 16px;
+                font-weight: 600;
+                margin-top: 0;
+                margin-bottom: 16px;
+                color: #e2e8f0;
+            }
+            .omega-row {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 14px 0;
+                border-bottom: 1px solid #334155;
+            }
+            .omega-row:last-child {
+                border-bottom: none;
+            }
+            .omega-label {
+                font-weight: 600;
+                color: #f1f5f9;
+                font-size: 14px;
+            }
+            .omega-desc {
+                font-size: 12px;
+                color: #94a3b8;
+                margin-top: 4px;
+                max-width: 500px;
+            }
+            .omega-input-text {
+                background: #0f172a !important;
+                border: 1px solid #475569 !important;
+                color: #f8fafc !important;
+                border-radius: 6px !important;
+                padding: 8px 12px !important;
+                font-size: 14px !important;
+                width: 200px;
+                transition: border-color 0.2s, box-shadow 0.2s;
+            }
+            .omega-input-text:focus {
+                border-color: #8b5cf6 !important;
+                box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.25) !important;
+                outline: none !important;
+            }
+            .omega-toggle-switch {
+                position: relative;
+                display: inline-block;
+                width: 48px;
+                height: 24px;
+            }
+            .omega-toggle-switch input {
+                opacity: 0;
+                width: 0;
+                height: 0;
+            }
+            .omega-toggle-slider {
+                position: absolute;
+                cursor: pointer;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background-color: #475569;
+                transition: .3s;
+                border-radius: 24px;
+            }
+            .omega-toggle-slider:before {
+                position: absolute;
+                content: "";
+                height: 18px;
+                width: 18px;
+                left: 3px;
+                bottom: 3px;
+                background-color: white;
+                transition: .3s;
+                border-radius: 50%;
+            }
+            input:checked + .omega-toggle-slider {
+                background-color: #8b5cf6;
+            }
+            input:checked + .omega-toggle-slider:before {
+                transform: translateX(24px);
+            }
+            .omega-select {
+                background: #0f172a !important;
+                color: #f8fafc !important;
+                border: 1px solid #475569 !important;
+                border-radius: 6px !important;
+                padding: 6px 12px !important;
+                font-size: 14px !important;
+                outline: none !important;
+                height: auto !important;
+            }
+            .omega-btn-submit {
+                background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%) !important;
+                color: #ffffff !important;
+                border: none !important;
+                border-radius: 6px !important;
+                padding: 10px 24px !important;
+                font-size: 14px !important;
+                font-weight: 600 !important;
+                cursor: pointer !important;
+                transition: transform 0.1s, box-shadow 0.2s !important;
+                box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3) !important;
+                text-shadow: none !important;
+            }
+            .omega-btn-submit:hover {
+                transform: translateY(-1px);
+                box-shadow: 0 6px 16px rgba(139, 92, 246, 0.4) !important;
+                color: #ffffff !important;
+            }
+            .omega-btn-submit:active {
+                transform: translateY(0);
+            }
+            .omega-btn-danger {
+                background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%) !important;
+                color: #ffffff !important;
+                border: none !important;
+                border-radius: 6px !important;
+                padding: 10px 24px !important;
+                font-size: 14px !important;
+                font-weight: 600 !important;
+                cursor: pointer !important;
+                transition: transform 0.1s, box-shadow 0.2s !important;
+                box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3) !important;
+                text-shadow: none !important;
+            }
+            .omega-btn-danger:hover {
+                transform: translateY(-1px);
+                box-shadow: 0 6px 16px rgba(239, 68, 68, 0.4) !important;
+                color: #ffffff !important;
+            }
+            .omega-btn-danger:active {
+                transform: translateY(0);
+            }
+        </style>
+        <div class="omega-dashboard">
+            <div class="omega-header">
+                <h1 class="omega-title">OmegaDrive E-Commerce Pro</h1>
+                <div>
+                    <?php if ($ping_success) : ?>
+                        <span class="omega-badge omega-badge-success">
+                            <span style="display:inline-block; width:8px; height:8px; background:#10b981; border-radius:50%;"></span>
+                            Connected (<?php echo esc_html($latency); ?>ms latency)
+                        </span>
+                    <?php else : ?>
+                        <span class="omega-badge omega-badge-error">
+                            <span style="display:inline-block; width:8px; height:8px; background:#ef4444; border-radius:50%;"></span>
+                            Disconnected
+                        </span>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+            <?php if ($flush_status === 'success') : ?>
+                <div style="background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.3); color: #34d399; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; font-size: 14px;">
+                    <strong>Success:</strong> OmegaDrive database cache flushed successfully!
+                </div>
+            <?php elseif ($flush_status === 'error') : ?>
+                <div style="background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); color: #f87171; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; font-size: 14px;">
+                    <strong>Error:</strong> Failed to flush OmegaDrive database cache.
+                </div>
+            <?php endif; ?>
+            
             <form method="post" action="options.php">
                 <?php settings_fields('omegadrive_options_group'); ?>
-                <table class="form-table">
-                    <tr valign="top">
-                    <th scope="row">Matrix IP Address</th>
-                    <td><input type="text" name="omega_drive_host" value="<?php echo esc_attr(get_option('omega_drive_host', '172.19.0.1')); ?>" />
-                    <p class="description">Default for Docker is <code>172.19.0.1</code>. For native local installs use <code>127.0.0.1</code>.</p></td>
-                    </tr>
-                </table>
-                <?php submit_button(); ?>
+                
+                <div class="omega-section">
+                    <h2 class="omega-section-title">Matrix Connection Settings</h2>
+                    <div class="omega-row">
+                        <div>
+                            <div class="omega-label">Matrix Host / IP</div>
+                            <div class="omega-desc">IP address of the OmegaDrive high-performance key-value database.</div>
+                        </div>
+                        <div>
+                            <input type="text" name="omega_drive_host" class="omega-input-text" value="<?php echo esc_attr(get_option('omega_drive_host', '172.19.0.1')); ?>" />
+                        </div>
+                    </div>
+                </div>
+
+                <div class="omega-section">
+                    <h2 class="omega-section-title">WP-Admin Speed & Resource Optimizations</h2>
+                    
+                    <div class="omega-row">
+                        <div>
+                            <div class="omega-label">Deactivate WooCommerce Analytics</div>
+                            <div class="omega-desc">Speeds up WP Admin loads by up to 50% by completely disabling the heavy WooCommerce Analytics and Gutenberg report generator packages.</div>
+                        </div>
+                        <div>
+                            <label class="omega-toggle-switch">
+                                <input type="checkbox" name="omega_disable_analytics" value="1" <?php checked(1, get_option('omega_disable_analytics', 0)); ?> />
+                                <span class="omega-toggle-slider"></span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="omega-row">
+                        <div>
+                            <div class="omega-label">WordPress Heartbeat Control</div>
+                            <div class="omega-desc">Regulates frequency of WordPress heartbeat AJAX requests in the background. Reducing this prevents CPU spikes on your server.</div>
+                        </div>
+                        <div>
+                            <select name="omega_heartbeat_control" class="omega-select">
+                                <option value="modify" <?php selected('modify', get_option('omega_heartbeat_control', 'modify')); ?>>Reduce frequency (120s interval)</option>
+                                <option value="disable" <?php selected('disable', get_option('omega_heartbeat_control', 'modify')); ?>>Disable Heartbeat completely</option>
+                                <option value="default" <?php selected('default', get_option('omega_heartbeat_control', 'modify')); ?>>Default WordPress behavior</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="omega-row">
+                        <div>
+                            <div class="omega-label">Block Marketplace Ads & Suggestions</div>
+                            <div class="omega-desc">Prevents WooCommerce from loading remote marketing ads, helper notices, and extensions suggestions directly on your dashboard.</div>
+                        </div>
+                        <div>
+                            <label class="omega-toggle-switch">
+                                <input type="checkbox" name="omega_disable_suggestions" value="1" <?php checked(1, get_option('omega_disable_suggestions', 0)); ?> />
+                                <span class="omega-toggle-slider"></span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="omega-row">
+                        <div>
+                            <div class="omega-label">Enable Debug Logging</div>
+                            <div class="omega-desc">Generates detailed debug logs (debug.log and core_debug.log) inside the plugin directory for monitoring cache hits, misses, and optimization events. Turn off on production.</div>
+                        </div>
+                        <div>
+                            <label class="omega-toggle-switch">
+                                <input type="checkbox" name="omega_enable_debug" value="1" <?php checked(1, get_option('omega_enable_debug', 0)); ?> />
+                                <span class="omega-toggle-slider"></span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="text-align: right; margin-top: 24px; margin-bottom: 24px;">
+                    <?php submit_button('Save Configuration', 'primary', 'submit', false, ['class' => 'omega-btn-submit']); ?>
+                </div>
             </form>
+
+            <div class="omega-section">
+                <h2 class="omega-section-title">Database Maintenance</h2>
+                <div class="omega-row">
+                    <div>
+                        <div class="omega-label">Flush Database Cache</div>
+                        <div class="omega-desc">Clears all cached pages, static assets, and objects from the OmegaDrive memory. Use this if you made changes to styles or product catalog.</div>
+                    </div>
+                    <div>
+                        <form method="post" action="" style="margin:0;">
+                            <?php wp_nonce_field('omega_flush_db_action', 'omega_flush_db_nonce'); ?>
+                            <button type="submit" name="omega_flush_db_btn" class="omega-btn-danger">Flush Cache</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
         </div>
         <?php
     }
 
     private function is_bypass_request() {
         if (is_admin()) return true;
-        if (strpos($_SERVER['REQUEST_URI'], 'wp-admin') !== false) return true;
-        if (strpos($_SERVER['REQUEST_URI'], 'wp-login') !== false) return true;
+        
+        $request_uri = isset($_SERVER['REQUEST_URI']) ? esc_url_raw(wp_unslash($_SERVER['REQUEST_URI'])) : '/';
+        
+        if (strpos($request_uri, 'wp-admin') !== false) return true;
+        if (strpos($request_uri, 'wp-login') !== false) return true;
         
         // Dynamic WooCommerce page ID bypasses
         $cart_id = (int)get_option('woocommerce_cart_page_id');
         $checkout_id = (int)get_option('woocommerce_checkout_page_id');
         $myaccount_id = (int)get_option('woocommerce_myaccount_page_id');
         
-        if (isset($_GET['page_id'])) {
-            $pid = (int)$_GET['page_id'];
-            if ($pid === $cart_id || $pid === $checkout_id || $pid === $myaccount_id) return true;
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+        $page_id = isset($_GET['page_id']) ? (int)$_GET['page_id'] : 0;
+        if ($page_id) {
+            if ($page_id === $cart_id || $page_id === $checkout_id || $page_id === $myaccount_id) return true;
         }
 
         // WooCommerce transactional page bypasses
-        if (strpos($_SERVER['REQUEST_URI'], '/cart') !== false) return true;
-        if (strpos($_SERVER['REQUEST_URI'], '/checkout') !== false) return true;
-        if (strpos($_SERVER['REQUEST_URI'], '/my-account') !== false) return true;
-        if (strpos($_SERVER['REQUEST_URI'], 'wc-ajax=') !== false) return true;
-        if (strpos($_SERVER['REQUEST_URI'], 'wp-json') !== false) return true;
-        if (strpos($_SERVER['REQUEST_URI'], 'rest_route=') !== false) return true;
+        if (strpos($request_uri, '/cart') !== false) return true;
+        if (strpos($request_uri, '/checkout') !== false) return true;
+        if (strpos($request_uri, '/my-account') !== false) return true;
+        if (strpos($request_uri, 'wc-ajax=') !== false) return true;
+        if (strpos($request_uri, 'wp-json') !== false) return true;
+        if (strpos($request_uri, 'rest_route=') !== false) return true;
         
         if (defined('DOING_AJAX') && DOING_AJAX) return true;
         if (defined('REST_REQUEST') && REST_REQUEST) return true;
@@ -103,30 +494,73 @@ class Omega_Ecommerce_Pro {
     }
 
     public function serve_cache() {
-        if ($this->is_bypass_request()) return;
-        if (isset($_GET['nocache'])) return;
-        if ($_SERVER['REQUEST_METHOD'] !== 'GET') return;
+        $request_uri = isset($_SERVER['REQUEST_URI']) ? esc_url_raw(wp_unslash($_SERVER['REQUEST_URI'])) : '/';
 
-        $uri = $_SERVER['REQUEST_URI'] ?: '/';
-        $cache_key = 'hyper_matrix:' . md5($_SERVER['HTTP_HOST'] . $uri);
+        // Check for assets requests first, bypassing standard page caching logic
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+        if (isset($_GET['omega_ext'])) {
+            // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+            $omega_ext = sanitize_text_field(wp_unslash($_GET['omega_ext']));
+            if (preg_match('/^[a-f0-9]+\.(js|css|webp|png|jpg|gif|bin|woff|woff2|ttf|eot)$/i', $omega_ext)) {
+                $asset_key = 'asset:/omega-ext/' . $omega_ext;
+                $cached_asset = $this->connector->get($asset_key);
+                if ($cached_asset) {
+                    $ext = pathinfo($omega_ext, PATHINFO_EXTENSION);
+                    if ($ext === 'js') {
+                        header('Content-Type: application/javascript; charset=UTF-8');
+                    } elseif ($ext === 'css') {
+                        header('Content-Type: text/css; charset=UTF-8');
+                    } elseif ($ext === 'webp') {
+                        header('Content-Type: image/webp');
+                    } elseif ($ext === 'woff2') {
+                        header('Content-Type: font/woff2');
+                    } elseif ($ext === 'woff') {
+                        header('Content-Type: font/woff');
+                    } elseif ($ext === 'ttf') {
+                        header('Content-Type: font/ttf');
+                    }
+                    // Efficient browser caching: 1 year public cache time
+                    header('Cache-Control: public, max-age=31536000, immutable');
+                    // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+                    echo $cached_asset;
+                    exit;
+                }
+            }
+        }
+
+        if ($this->is_bypass_request()) return;
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+        if (isset($_GET['nocache'])) return;
+
+        $request_method = isset($_SERVER['REQUEST_METHOD']) ? sanitize_text_field(wp_unslash($_SERVER['REQUEST_METHOD'])) : '';
+        if ($request_method !== 'GET') return;
+
+        $http_host = isset($_SERVER['HTTP_HOST']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_HOST'])) : 'localhost';
+        $cache_key = 'hyper_matrix:' . md5($http_host . $request_uri);
         $cached_content = $this->connector->get($cache_key);
 
         if ($cached_content) {
             header('X-Omega-Status: HYPER-HIT');
             header('X-Omega-Key: ' . $cache_key);
             header('Content-Type: text/html; charset=UTF-8');
+            // Efficient browser caching for public cached HTML pages (e.g. 5 minutes)
+            header('Cache-Control: public, max-age=300, must-revalidate');
             
             // Check if cached content is gzipped (starts with gzip magic bytes 0x1f 0x8b)
             $is_gzipped = (strlen($cached_content) >= 2 && ord($cached_content[0]) === 0x1f && ord($cached_content[1]) === 0x8b);
             
             if ($is_gzipped) {
-                if (isset($_SERVER['HTTP_ACCEPT_ENCODING']) && strpos($_SERVER['HTTP_ACCEPT_ENCODING'], 'gzip') !== false) {
+                $http_accept_encoding = isset($_SERVER['HTTP_ACCEPT_ENCODING']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_ACCEPT_ENCODING'])) : '';
+                if (strpos($http_accept_encoding, 'gzip') !== false) {
                     header('Content-Encoding: gzip');
+                    // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
                     echo $cached_content;
                 } else {
+                    // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
                     echo gzdecode($cached_content);
                 }
             } else {
+                // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
                 echo $cached_content;
             }
             exit;
@@ -135,11 +569,17 @@ class Omega_Ecommerce_Pro {
 
     public function start_buffer() {
         if ($this->is_bypass_request()) return;
+        $this->log_debug("2. START BUFFER CALLED. URI: " . (isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : ''));
         ob_start([$this, 'buffer_callback']);
     }
 
     public function buffer_callback($content) {
         if ($this->is_bypass_request()) return $content;
+        
+        $this->log_debug("3. BUFFER CALLBACK RUNNING. LEN: " . strlen($content));
+        
+        $request_uri = isset($_SERVER['REQUEST_URI']) ? esc_url_raw(wp_unslash($_SERVER['REQUEST_URI'])) : '/';
+        $http_host = isset($_SERVER['HTTP_HOST']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_HOST'])) : 'localhost';
         
         // Zabezpieczenie: jeśli content nie zaczyna się od doctype lub html, nie dotykaj go!
         $trimmed = ltrim($content);
@@ -193,15 +633,7 @@ class Omega_Ecommerce_Pro {
                                 $css_content
                             );
                             
-                            // Agresywna minifikacja CSS
-                            $css_content = preg_replace('!/\*[^*]*\*+([^/*][^*]*\*+)*/!', '', $css_content);
-                            $css_content = str_replace(array("\r\n", "\r", "\n", "\t"), '', $css_content);
-                            $css_content = preg_replace('/ {2,}/', ' ', $css_content);
-                            $css_content = str_replace(array(' {', '{ '), '{', $css_content);
-                            $css_content = str_replace(array(' }', '} ', ';}'), '}', $css_content);
-                            $css_content = str_replace(array(' :', ': '), ':', $css_content);
-                            $css_content = str_replace(array(' ,', ', '), ',', $css_content);
-                            $css_content = str_replace(array(' ;', '; '), ';', $css_content);
+                            $css_content = $this->minify_css($css_content);
                             
                             $inline_style = '<style id="omega-inlined-' . md5($clean_url) . '">' . $css_content . '</style>';
                             $content = str_replace($full_tag, $inline_style, $content);
@@ -211,15 +643,16 @@ class Omega_Ecommerce_Pro {
             }
         }
 
-        $uri = $_SERVER['REQUEST_URI'] ?: '/';
-        $cache_key = 'hyper_matrix:' . md5($_SERVER['HTTP_HOST'] . $uri);
+        $cache_key = 'hyper_matrix:' . md5($http_host . $request_uri);
         
         // Agresywny, ultra-bezpieczny defer dla skryptów w locie w HTML (uniwersalny parser)
         $content = preg_replace_callback('/<script\s+([^>]*)src=["\']([^"\']+\.js[^"\']*)["\']([^>]*)>/i', function($matches) {
             $attrs_before = $matches[1];
             $src = $matches[2];
             $attrs_after = $matches[3];
-            @file_put_contents(__DIR__ . '/debug.log', "MATCHED SCRIPT: " . $src . "\n", FILE_APPEND);
+            // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+            error_log("OmegaDrive Match: " . $src);
+            $this->log_debug("MATCHED SCRIPT: " . $src);
             
             // Tylko rdzeń jQuery zachowujemy synchronicznie (jquery-migrate może być w pełni deferred!)
             if (strpos($src, 'jquery.min.js') !== false || strpos($src, 'jquery.js') !== false) {
@@ -265,53 +698,118 @@ class Omega_Ecommerce_Pro {
         
         // ========== OPTIMIZATION 1: Universal External Resource Proxy → OmegaDrive RAM ==========
         // Wykrywa KAŻDY zewnętrzny CSS i JS, pobiera go, zapisuje do OmegaDrive RAM i przepisuje URL na lokalny
-        $current_host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+        $current_host = $http_host;
         $http_ctx = stream_context_create(['http' => [
             'header' => "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36\r\n",
             'timeout' => 5
         ]]);
         
-        // --- 1A: Zewnętrzne CSS (link stylesheet) ---
+        // --- 1A: Zewnętrzne/Lokalne CSS ---
         $content = preg_replace_callback('/<link([^>]*rel=["\']stylesheet["\'][^>]*)href=["\']([^"\']+)["\']([^>]*)\/?>/i', function($m) use ($current_host, $http_ctx) {
             $before = $m[1]; $url = html_entity_decode($m[2]); $after = $m[3];
             
-            // Sprawdź czy to URL zewnętrzny (http/https z innym hostem)
-            $parsed = parse_url($url);
-            if (!isset($parsed['host'])) return $m[0]; // relatywny URL = lokalny
-            if (stripos($parsed['host'], 'localhost') !== false || strpos($parsed['host'], '127.0.0.1') !== false) return $m[0];
-            if (stripos($parsed['host'], $current_host) !== false) return $m[0];
+            // Skip admin styles or plugins that shouldn't be touched
+            if (stripos($url, '/wp-admin/') !== false || stripos($url, 'wp-login.php') !== false) {
+                return $m[0];
+            }
             
-            // To jest zewnętrzny CSS! Pobierz do OmegaDrive
+            $parsed = wp_parse_url($url);
+            $host = $parsed['host'] ?? '';
+            $path = $parsed['path'] ?? '';
+            
+            // Determine if it is a local file and find the local path
+            $local_file_path = '';
+            if (empty($host) || stripos($host, $current_host) !== false || stripos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false) {
+                $site_path = wp_parse_url(site_url(), PHP_URL_PATH) ?: '';
+                $site_path = rtrim($site_path, '/');
+                $relative_path = $path;
+                if (!empty($site_path) && strpos($path, $site_path) === 0) {
+                    $relative_path = substr($path, strlen($site_path));
+                }
+                $abspath_file = ABSPATH . ltrim($relative_path, '/');
+                if (file_exists($abspath_file)) {
+                    $local_file_path = $abspath_file;
+                }
+            }
+            
+            // Generate cache key and path. Query string must be part of the hash to support version cache busting.
             $url_hash = md5($url);
-            $ext = pathinfo($parsed['path'] ?? 'style.css', PATHINFO_EXTENSION) ?: 'css';
-            $local_path = '/omega-ext/' . $url_hash . '.' . $ext;
-            $cache_key = 'asset:' . $local_path;
+            $ext = pathinfo($path, PATHINFO_EXTENSION) ?: 'css';
+            $local_path = site_url('/index.php?omega_ext=' . $url_hash . '.' . $ext);
+            $cache_key = 'asset:/omega-ext/' . $url_hash . '.' . $ext;
             
             $cached = $this->connector->get($cache_key);
             if (!$cached) {
-                $css_data = @file_get_contents($url, false, $http_ctx);
+                $css_data = '';
+                if (!empty($local_file_path)) {
+                    $css_data = @file_get_contents($local_file_path);
+                } else {
+                    // Resolve external url
+                    $fetch_url = $url;
+                    if (strpos($url, '//') === 0) {
+                        $fetch_url = (is_ssl() ? 'https:' : 'http:') . $url;
+                    }
+                    $css_data = @file_get_contents($fetch_url, false, $http_ctx);
+                }
+                
                 if ($css_data) {
-                    // Parsuj url() wewnątrz CSS (fonty, obrazki) i pobierz je też
+                    if (stripos($path, '.min.css') === false) {
+                        $css_data = $this->minify_css($css_data);
+                    }
+                    
+                    // Parse url() inside CSS (fonts, images) and download them too
                     preg_match_all('/url\(\s*["\']?([^"\')]+)["\']?\s*\)/i', $css_data, $sub_urls);
                     foreach ($sub_urls[1] as $sub_url) {
                         $sub_url = trim($sub_url);
                         if (strpos($sub_url, 'data:') === 0) continue; // skip data URIs
                         
-                        // Rozwiąż relatywny URL
-                        if (strpos($sub_url, '//') === 0) $sub_url = 'https:' . $sub_url;
-                        elseif (strpos($sub_url, 'http') !== 0) continue;
+                        // Resolve relative sub-url relative to parent CSS file
+                        $sub_resolved_url = $sub_url;
+                        if (strpos($sub_url, 'http') !== 0 && strpos($sub_url, '//') !== 0) {
+                            // Relative path inside CSS
+                            $css_dir = dirname($url);
+                            $sub_resolved_url = $css_dir . '/' . $sub_url;
+                        }
                         
-                        $sub_data = @file_get_contents($sub_url, false, $http_ctx);
+                        // Check if local
+                        $sub_parsed = wp_parse_url($sub_resolved_url);
+                        $sub_host = $sub_parsed['host'] ?? '';
+                        $sub_path = $sub_parsed['path'] ?? '';
+                        
+                        $sub_local_file = '';
+                        if (empty($sub_host) || stripos($sub_host, $current_host) !== false || stripos($sub_host, 'localhost') !== false) {
+                            $sub_site_path = wp_parse_url(site_url(), PHP_URL_PATH) ?: '';
+                            $sub_site_path = rtrim($sub_site_path, '/');
+                            $sub_relative = $sub_path;
+                            if (!empty($sub_site_path) && strpos($sub_path, $sub_site_path) === 0) {
+                                $sub_relative = substr($sub_path, strlen($sub_site_path));
+                            }
+                            $sub_abspath = ABSPATH . ltrim($sub_relative, '/');
+                            if (file_exists($sub_abspath)) {
+                                $sub_local_file = $sub_abspath;
+                            }
+                        }
+                        
+                        $sub_data = '';
+                        if (!empty($sub_local_file)) {
+                            $sub_data = @file_get_contents($sub_local_file);
+                        } else {
+                            if (strpos($sub_resolved_url, '//') === 0) {
+                                $sub_resolved_url = (is_ssl() ? 'https:' : 'http:') . $sub_resolved_url;
+                            }
+                            $sub_data = @file_get_contents($sub_resolved_url, false, $http_ctx);
+                        }
+                        
                         if ($sub_data) {
-                            $sub_hash = md5($sub_url);
-                            $sub_ext = pathinfo(parse_url($sub_url, PHP_URL_PATH) ?? '', PATHINFO_EXTENSION) ?: 'bin';
-                            $sub_local = '/omega-ext/' . $sub_hash . '.' . $sub_ext;
-                            $this->connector->set('asset:' . $sub_local, $sub_data);
+                            $sub_hash = md5($sub_resolved_url);
+                            $sub_ext = pathinfo($sub_path, PATHINFO_EXTENSION) ?: 'bin';
+                            $sub_local = site_url('/index.php?omega_ext=' . $sub_hash . '.' . $sub_ext);
+                            $this->connector->set('asset:/omega-ext/' . $sub_hash . '.' . $sub_ext, $sub_data);
                             $css_data = str_replace($sub_url, $sub_local, $css_data);
                         }
                     }
                     
-                    // Dodaj font-display: swap jeśli brak
+                    // Add font-display: swap if missing
                     if (strpos($css_data, '@font-face') !== false && strpos($css_data, 'font-display') === false) {
                         $css_data = preg_replace('/@font-face\s*\{/', '@font-face { font-display: swap;', $css_data);
                     }
@@ -322,33 +820,64 @@ class Omega_Ecommerce_Pro {
             }
             
             if ($cached) {
-                // Inline mały CSS (< 10KB), reszta rewrite na lokalny path
+                // Inline small CSS (< 10KB), rest rewrite to local path
                 if (strlen($cached) < 10240) {
                     return '<style id="omega-ext-' . substr($url_hash, 0, 8) . '">' . $cached . '</style>';
                 }
                 return '<link' . $before . 'href="' . $local_path . '"' . $after . '/>';
             }
-            return $m[0]; // fallback: nie ruszaj oryginału
+            return $m[0]; // fallback
         }, $content);
         
-        // --- 1B: Zewnętrzne JS (script src) ---
+        // --- 1B: Zewnętrzne/Lokalne JS ---
         $content = preg_replace_callback('/<script([^>]*)src=["\']([^"\']+)["\']([^>]*)>/i', function($m) use ($current_host, $http_ctx) {
             $before = $m[1]; $url = html_entity_decode($m[2]); $after = $m[3];
             
-            $parsed = parse_url($url);
-            if (!isset($parsed['host'])) return $m[0];
-            if (stripos($parsed['host'], 'localhost') !== false || strpos($parsed['host'], '127.0.0.1') !== false) return $m[0];
-            if (stripos($parsed['host'], $current_host) !== false) return $m[0];
+            // Skip admin files
+            if (stripos($url, '/wp-admin/') !== false || stripos($url, 'wp-login.php') !== false) {
+                return $m[0];
+            }
             
-            // Zewnętrzny JS! Pobierz do OmegaDrive
+            $parsed = wp_parse_url($url);
+            $host = $parsed['host'] ?? '';
+            $path = $parsed['path'] ?? '';
+            
+            // Determine local file path
+            $local_file_path = '';
+            if (empty($host) || stripos($host, $current_host) !== false || stripos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false) {
+                $site_path = wp_parse_url(site_url(), PHP_URL_PATH) ?: '';
+                $site_path = rtrim($site_path, '/');
+                $relative_path = $path;
+                if (!empty($site_path) && strpos($path, $site_path) === 0) {
+                    $relative_path = substr($path, strlen($site_path));
+                }
+                $abspath_file = ABSPATH . ltrim($relative_path, '/');
+                if (file_exists($abspath_file)) {
+                    $local_file_path = $abspath_file;
+                }
+            }
+            
             $url_hash = md5($url);
-            $local_path = '/omega-ext/' . $url_hash . '.js';
-            $cache_key = 'asset:' . $local_path;
+            $local_path = site_url('/index.php?omega_ext=' . $url_hash . '.js');
+            $cache_key = 'asset:/omega-ext/' . $url_hash . '.js';
             
             $cached = $this->connector->get($cache_key);
             if (!$cached) {
-                $js_data = @file_get_contents($url, false, $http_ctx);
+                $js_data = '';
+                if (!empty($local_file_path)) {
+                    $js_data = @file_get_contents($local_file_path);
+                } else {
+                    $fetch_url = $url;
+                    if (strpos($url, '//') === 0) {
+                        $fetch_url = (is_ssl() ? 'https:' : 'http:') . $url;
+                    }
+                    $js_data = @file_get_contents($fetch_url, false, $http_ctx);
+                }
+                
                 if ($js_data) {
+                    if (stripos($path, '.min.js') === false) {
+                        $js_data = $this->minify_js($js_data);
+                    }
                     $this->connector->set($cache_key, $js_data);
                     $cached = $js_data;
                 }
@@ -372,7 +901,7 @@ class Omega_Ecommerce_Pro {
                 if (strpos($attrs, $id) !== false) return $tag;
             }
             if (strpos($attrs, 'onload') !== false) return $tag;
-            if (strpos($attrs, 'omega-ext') !== false) return $tag;
+            if (strpos($attrs, 'omega_ext') !== false || strpos($attrs, 'omega-ext') !== false) return $tag;
             
             // Zamień na async pattern
             $tag = preg_replace('/\s*media=["\'][^"\']*["\']/i', '', $tag);
@@ -401,17 +930,16 @@ class Omega_Ecommerce_Pro {
         $content = preg_replace('/<head(\s+[^>]*)?>/i', '$0' . "\n" . $wp_hooks_fallback, $content);
         
         // 1. Auto-Alt, Lazy Loading, Async Decoding & CLS Prevention for Images
-        $content = preg_replace_callback('/<img\s+([^>]+)>/i', function($m) {
+        $img_count = 0;
+        $content = preg_replace_callback('/<img\s+([^>]+)>/i', function($m) use (&$img_count) {
+            $img_count++;
             $attrs_str = $m[1];
             
             // Ultra-fast Next-Gen WebP rewriting for all image source attributes
             $attrs_str = preg_replace_callback('/(src|srcset|data-src|data-srcset|data-lazy-src)=["\']([^"\']+)["\']/i', function($attr_match) {
                 $attr_name = $attr_match[1];
                 $attr_val = $attr_match[2];
-                if (stripos($attr_val, '/wp-content/uploads/') !== false) {
-                    $attr_val = preg_replace('/\.jpe?g(\b|\?)/i', '.webp$1', $attr_val);
-                    $attr_val = preg_replace('/\.png(\b|\?)/i', '.webp$1', $attr_val);
-                }
+                $attr_val = $this->optimize_image_src($attr_name, $attr_val);
                 return $attr_name . '="' . $attr_val . '"';
             }, $attrs_str);
             
@@ -425,10 +953,6 @@ class Omega_Ecommerce_Pro {
                 $suffix = '/';
             }
             
-            // Auto loading="lazy"
-            if (stripos($attrs_str, 'loading=') === false) {
-                $attrs_str .= ' loading="lazy"';
-            }
             // Auto decoding="async"
             if (stripos($attrs_str, 'decoding=') === false) {
                 $attrs_str .= ' decoding="async"';
@@ -442,7 +966,7 @@ class Omega_Ecommerce_Pro {
                 // Wyciągnij nazwę pliku z src, aby stworzyć przyjazny alt
                 $alt_val = 'Product Image';
                 if (preg_match('/src=["\']([^"\']+)["\']/i', $attrs_str, $src_matches)) {
-                    $filename = basename(parse_url($src_matches[1], PHP_URL_PATH));
+                    $filename = basename(wp_parse_url($src_matches[1], PHP_URL_PATH));
                     $filename_clean = pathinfo($filename, PATHINFO_FILENAME);
                     $alt_val = ucwords(str_replace(['-', '_'], ' ', $filename_clean));
                 }
@@ -455,7 +979,7 @@ class Omega_Ecommerce_Pro {
                     $img_url = $src_matches[1];
                     // Jeśli to lokalny plik z wp-content, odczytaj rzeczywiste wymiary z dysku
                     if (strpos($img_url, '/wp-content/') !== false) {
-                        $parsed_img = parse_url($img_url);
+                        $parsed_img = wp_parse_url($img_url);
                         $local_img_path = ABSPATH . ltrim($parsed_img['path'] ?? '', '/');
                         if (file_exists($local_img_path) && $size = @getimagesize($local_img_path)) {
                             if (stripos($attrs_str, 'width=') === false) {
@@ -466,6 +990,21 @@ class Omega_Ecommerce_Pro {
                             }
                         }
                     }
+                }
+            }
+
+            // CRITICAL LCP OPTIMIZATION:
+            // Do NOT lazy load the first 2 images. Instead, give them fetchpriority="high".
+            // For other images, add loading="lazy".
+            if ($img_count <= 2) {
+                // Remove loading="lazy" if present
+                $attrs_str = preg_replace('/\s*loading=["\']?lazy["\']?/i', '', $attrs_str);
+                if (stripos($attrs_str, 'fetchpriority=') === false) {
+                    $attrs_str .= ' fetchpriority="high"';
+                }
+            } else {
+                if (stripos($attrs_str, 'loading=') === false) {
+                    $attrs_str .= ' loading="lazy"';
                 }
             }
             
@@ -547,61 +1086,80 @@ class Omega_Ecommerce_Pro {
         $content = str_replace('</body>', $instant_js . "\n</body>", $content);
 
         // ========== OPTIMIZATION 4: LCP Featured Image Preload & Fetchpriority Optimization ==========
-        // Znajduje główny obrazek produktu na stronie (wp-post-image), usuwa lazy load, dodaje wysoki priorytet
-        // i wstrzykuje tag preloading do sekcji <head>, dzięki czemu przeglądarka pobiera go natychmiast
+        // Znajduje główny obrazek produktu na stronie (wp-post-image), lub pierwszy istotny obrazek nad linią załamania (LCP),
+        // usuwa z niego lazy load, dodaje wysoki priorytet i wstrzykuje tag preloading do sekcji <head>.
+        $lcp_img_found = false;
+        $lcp_img_tag = '';
+        
         if (preg_match_all('/<img[^>]+>/i', $content, $img_matches)) {
+            // Pierwsza próba: szukaj wp-post-image
             foreach ($img_matches[0] as $img_tag) {
                 if (strpos($img_tag, 'wp-post-image') !== false) {
-                    if (preg_match('/src=["\']([^"\']+)["\']/i', $img_tag, $src_match)) {
-                        $img_url = html_entity_decode($src_match[1]);
-                        
-                        // Wyciągamy srcset i sizes do responsywnego preloadera
-                        $srcset_attr = '';
-                        if (preg_match('/srcset=["\']([^"\']+)["\']/i', $img_tag, $srcset_match)) {
-                            $srcset_attr = ' imagesrcset="' . esc_attr(html_entity_decode($srcset_match[1])) . '"';
-                        }
-                        $sizes_attr = '';
-                        if (preg_match('/sizes=["\']([^"\']+)["\']/i', $img_tag, $sizes_match)) {
-                            $sizes_attr = ' imagesizes="' . esc_attr(html_entity_decode($sizes_match[1])) . '"';
-                        }
-                        
-                        // Usuń loading="lazy" lub loading='lazy' (również z ukośnikiem)
-                        $new_img_tag = preg_replace('/\s*\/?\s*loading=["\']lazy["\']/i', '', $img_tag);
-                        // Dodaj fetchpriority="high"
-                        if (strpos($new_img_tag, 'fetchpriority') === false) {
-                            $new_img_tag = str_replace('<img', '<img fetchpriority="high"', $new_img_tag);
-                        }
-                        $content = str_replace($img_tag, $new_img_tag, $content);
-                        
-                        // Wstrzyknij responsywny preload do sekcji <head>
-                        if (!empty($srcset_attr)) {
-                            $preload_tag = "\n" . '<link rel="preload" as="image"' . $srcset_attr . $sizes_attr . ' fetchpriority="high">';
-                        } else {
-                            $preload_tag = "\n" . '<link rel="preload" as="image" href="' . esc_url($img_url) . '" fetchpriority="high">';
-                        }
-                        
-                        // Krytyczne style przyspieszające LCP i wyłączające spinnery preloadera
-                        $critical_lcp_css = "\n" . '<style id="omega-critical-lcp-bypass">' .
-                            '.woocommerce-product-gallery { opacity: 1 !important; visibility: visible !important; }' .
-                            '.woocommerce-product-gallery__image { opacity: 1 !important; visibility: visible !important; }' .
-                            '.preloader-center, .preloader, #preloader, .pswp__preloader { display: none !important; visibility: hidden !important; opacity: 0 !important; pointer-events: none !important; }' .
-                            '</style>';
-                        
-                        $content = preg_replace('/<head(\s+[^>]*)?>/i', '$0' . $preload_tag . $critical_lcp_css, $content);
+                    $lcp_img_tag = $img_tag;
+                    $lcp_img_found = true;
+                    break;
+                }
+            }
+            
+            // Druga próba: szukaj pierwszego znaczącego obrazka (nie logo/avatar/icon)
+            if (!$lcp_img_found) {
+                foreach ($img_matches[0] as $img_tag) {
+                    if (stripos($img_tag, 'logo') === false && stripos($img_tag, 'avatar') === false && stripos($img_tag, 'icon') === false) {
+                        $lcp_img_tag = $img_tag;
+                        $lcp_img_found = true;
                         break;
                     }
                 }
             }
+            
+            if ($lcp_img_found && preg_match('/src=["\']([^"\']+)["\']/i', $lcp_img_tag, $src_match)) {
+                $img_url = html_entity_decode($src_match[1]);
+                
+                // Wyciągamy srcset i sizes do responsywnego preloadera
+                $srcset_attr = '';
+                if (preg_match('/srcset=["\']([^"\']+)["\']/i', $lcp_img_tag, $srcset_match)) {
+                    $srcset_attr = ' imagesrcset="' . esc_attr(html_entity_decode($srcset_match[1])) . '"';
+                }
+                $sizes_attr = '';
+                if (preg_match('/sizes=["\']([^"\']+)["\']/i', $lcp_img_tag, $sizes_match)) {
+                    $sizes_attr = ' imagesizes="' . esc_attr(html_entity_decode($sizes_match[1])) . '"';
+                }
+                
+                // Zapewniamy, że ten konkretny tag nie ma loading="lazy" oraz ma fetchpriority="high"
+                $new_lcp_tag = preg_replace('/\s*loading=["\']?lazy["\']?/i', '', $lcp_img_tag);
+                if (strpos($new_lcp_tag, 'fetchpriority') === false) {
+                    $new_lcp_tag = str_replace('<img', '<img fetchpriority="high"', $new_lcp_tag);
+                }
+                $content = str_replace($lcp_img_tag, $new_lcp_tag, $content);
+                
+                // Wstrzyknij responsywny preload do sekcji <head>
+                if (!empty($srcset_attr)) {
+                    $preload_tag = "\n" . '<link rel="preload" as="image"' . $srcset_attr . $sizes_attr . ' fetchpriority="high">';
+                } else {
+                    $preload_tag = "\n" . '<link rel="preload" as="image" href="' . esc_url($img_url) . '" fetchpriority="high">';
+                }
+                
+                // Krytyczne style przyspieszające LCP i wyłączające spinnery preloadera
+                $critical_lcp_css = "\n" . '<style id="omega-critical-lcp-bypass">' .
+                    '.woocommerce-product-gallery { opacity: 1 !important; visibility: visible !important; }' .
+                    '.woocommerce-product-gallery__image { opacity: 1 !important; visibility: visible !important; }' .
+                    '.preloader-center, .preloader, #preloader, .pswp__preloader { display: none !important; visibility: hidden !important; opacity: 0 !important; pointer-events: none !important; }' .
+                    '</style>';
+                
+                $content = preg_replace('/<head(\s+[^>]*)?>/i', '$0' . $preload_tag . $critical_lcp_css, $content);
+            }
         }
 
         if ($this->connector->connection_error) {
-            @file_put_contents(__DIR__ . '/debug.log', "3a. CONNECTION ERROR: " . $this->connector->connection_error . "\n", FILE_APPEND);
+            // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+            error_log("OmegaDrive: Connection Error: " . $this->connector->connection_error);
+            $this->log_debug("3a. CONNECTION ERROR: " . $this->connector->connection_error);
             return $content . "\n<!-- OmegaDrive Hyper-Early Cache | ERROR: " . $this->connector->connection_error . " -->";
         }
         
         $gzipped_content = gzencode($content, 9);
         $this->connector->set($cache_key, $gzipped_content);
-        @file_put_contents(__DIR__ . '/debug.log', "4. CACHED SUCCESSFULLY. KEY: " . $cache_key . "\n", FILE_APPEND);
+        $this->log_debug("4. CACHED SUCCESSFULLY. KEY: " . $cache_key);
         return $content . "\n<!-- OmegaDrive Hyper-Early Cache | Key: $cache_key | Status: Cached successfully! -->";
     }
 
@@ -630,6 +1188,113 @@ class Omega_Ecommerce_Pro {
         wp_dequeue_style('wp-block-library');
         wp_dequeue_style('wp-block-library-theme');
         wp_dequeue_style('wc-blocks-style');
+    }
+
+    private function optimize_image_src($attr_name, $attr_val) {
+        $attr_name_lower = strtolower($attr_name);
+        if ($attr_name_lower === 'srcset' || $attr_name_lower === 'data-srcset') {
+            $parts = explode(',', $attr_val);
+            foreach ($parts as &$part) {
+                $part = trim($part);
+                if (empty($part)) continue;
+                $subparts = preg_split('/\s+/', $part, 2);
+                if (!empty($subparts[0])) {
+                    $subparts[0] = $this->get_or_create_webp($subparts[0]);
+                }
+                $part = implode(' ', $subparts);
+            }
+            return implode(', ', $parts);
+        }
+        return $this->get_or_create_webp($attr_val);
+    }
+
+    private function get_or_create_webp($url) {
+        if (stripos($url, '/wp-content/uploads/') === false) {
+            return $url;
+        }
+
+        $parsed = wp_parse_url($url);
+        $path = isset($parsed['path']) ? $parsed['path'] : '';
+        if (empty($path)) {
+            return $url;
+        }
+
+        $current_host = isset($_SERVER['HTTP_HOST']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_HOST'])) : 'localhost';
+        $host = isset($parsed['host']) ? $parsed['host'] : '';
+        if (!empty($host) && stripos($host, $current_host) === false && stripos($host, 'localhost') === false && strpos($host, '127.0.0.1') === false) {
+            return $url;
+        }
+
+        $site_path = wp_parse_url(site_url(), PHP_URL_PATH) ?: '';
+        $site_path = rtrim($site_path, '/');
+        $relative_path = $path;
+        if (!empty($site_path) && strpos($path, $site_path) === 0) {
+            $relative_path = substr($path, strlen($site_path));
+        }
+
+        $local_file_path = ABSPATH . ltrim($relative_path, '/');
+        if (!file_exists($local_file_path)) {
+            return $url;
+        }
+
+        // Target only jpg/jpeg/png files for conversion
+        if (!preg_match('/\.jpe?g$/i', $local_file_path) && !preg_match('/\.png$/i', $local_file_path)) {
+            return $url;
+        }
+
+        $webp_file_path = preg_replace('/\.jpe?g$/i', '.webp', $local_file_path);
+        $webp_file_path = preg_replace('/\.png$/i', '.webp', $webp_file_path);
+
+        $webp_url = preg_replace('/\.jpe?g(\b|\?)/i', '.webp$1', $url);
+        $webp_url = preg_replace('/\.png(\b|\?)/i', '.webp$1', $webp_url);
+
+        if (file_exists($webp_file_path)) {
+            return $webp_url;
+        }
+
+        // On-the-fly conversion using GD library
+        $img = null;
+        if (preg_match('/\.jpe?g$/i', $local_file_path)) {
+            $img = @imagecreatefromjpeg($local_file_path);
+        } elseif (preg_match('/\.png$/i', $local_file_path)) {
+            $img = @imagecreatefrompng($local_file_path);
+            if ($img) {
+                imagepalettetotruecolor($img);
+                imagealphablending($img, true);
+                imagesavealpha($img, true);
+            }
+        }
+
+        if ($img) {
+            $success = @imagewebp($img, $webp_file_path, 82);
+            @imagedestroy($img);
+            if ($success) {
+                return $webp_url;
+            }
+        }
+
+        return $url;
+    }
+
+    private function minify_css($css) {
+        // Remove comments
+        $css = preg_replace('!/\*[^*]*\*+([^/*][^*]*\*+)*/!', '', $css);
+        // Remove spaces around punctuation
+        $css = preg_replace('/\s*([{}|:;,])\s*/', '$1', $css);
+        // Remove extra spaces
+        $css = preg_replace('/\s+/', ' ', $css);
+        return trim($css);
+    }
+
+    private function minify_js($js) {
+        // Strip multi-line comments safely using a non-backtracking simple regex
+        $js = preg_replace('!/\*.*?\*/!s', '', $js);
+        // Strip comments that occupy the entire line (safe, won't match inside regex/strings)
+        $js = preg_replace('/^[ \t]*\/\/.*$/m', '', $js);
+        // Remove empty lines
+        $js = preg_replace('/^[\r\n\s]+$/m', '', $js);
+        $js = preg_replace('/[\r\n]+/', "\n", $js);
+        return trim($js);
     }
 }
 

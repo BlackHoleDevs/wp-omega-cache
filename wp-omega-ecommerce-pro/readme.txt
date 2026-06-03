@@ -1,8 +1,8 @@
-=== OmegaDrive E-Commerce Pro ===
+=== OmegaDrive E-Commerce Pro (TCP Edition) ===
 Contributors: exmoond
-Tags: woocommerce, performance, cache, speed, lcp, next-gen image, speculative-preloader, reverse-proxy, omega-drive
+Tags: woocommerce, performance, cache, speed, omega-drive
 Requires at least: 5.6
-Tested up to: 6.5
+Tested up to: 7.0
 Stable tag: 1.5.0
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
