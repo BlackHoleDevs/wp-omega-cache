@@ -1,5 +1,5 @@
-=== OmegaDrive E-Commerce Pro (TCP Edition) ===
-Contributors: exmoond
+=== OmegaDrive E-Commerce Pro ===
+Contributors: OmegaDrive
 Tags: woocommerce, performance, cache, speed, omega-drive
 Requires at least: 5.6
 Tested up to: 7.0

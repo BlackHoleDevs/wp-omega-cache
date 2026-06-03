@@ -1,9 +1,9 @@
 <?php
 /**
- * Plugin Name: OmegaDrive E-Commerce Pro (TCP Edition)
+ * Plugin Name: OmegaDrive E-Commerce Pro
  * Version: 1.5.0
- * Description: High-performance caching and front-end optimization engine for WooCommerce, powered by the OmegaDrive database and reverse-proxy.
- * Author: exmoond
+ * Description: High-performance caching and front-end optimization engine for WooCommerce, powered by the OmegaDrive database and reverse-proxy. Open Source and available on GitHub: https://github.com/BlackHoleDevs/wp-omega-cache
+ * Author: OmegaDrive
  * License: GPLv2 or later
  * License URI: http://www.gnu.org/licenses/gpl-2.0.html
  */
@@ -21,7 +21,15 @@ class Omega_Ecommerce_Pro {
         if (!get_option('omega_enable_debug', 0)) {
             return;
         }
-        $log_file = plugin_dir_path(__FILE__) . ($file === 'core' ? 'core_debug.log' : 'debug.log');
+        $upload_dir = wp_upload_dir();
+        if (isset($upload_dir['error']) && $upload_dir['error'] !== false) {
+            return;
+        }
+        $log_dir = $upload_dir['basedir'] . '/omegadrive-logs';
+        if (!file_exists($log_dir)) {
+            wp_mkdir_p($log_dir);
+        }
+        $log_file = $log_dir . '/' . ($file === 'core' ? 'core_debug.log' : 'debug.log');
         // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
         @file_put_contents($log_file, $message . "\n", FILE_APPEND);
     }
@@ -32,7 +40,8 @@ class Omega_Ecommerce_Pro {
         $this->connector = new Omega_Connector($host, 6380);
 
         $this->log_debug("1. CONSTRUCT CALLED");
-        $this->log_debug("URI: " . (isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '') . " | FOUND OMEGA: " . __FILE__, 'core');
+        $request_uri = isset($_SERVER['REQUEST_URI']) ? esc_url_raw(wp_unslash($_SERVER['REQUEST_URI'])) : '';
+        $this->log_debug("URI: " . $request_uri . " | FOUND OMEGA: " . __FILE__, 'core');
 
         if ($has_fired) {
             $this->serve_cache();
@@ -48,13 +57,17 @@ class Omega_Ecommerce_Pro {
 
         add_action('update_option_omega_enable_debug', function($old_value, $value) {
             if (!$value) {
-                $debug_log = plugin_dir_path(__FILE__) . 'debug.log';
-                $core_log = plugin_dir_path(__FILE__) . 'core_debug.log';
-                if (file_exists($debug_log)) {
-                    @unlink($debug_log);
-                }
-                if (file_exists($core_log)) {
-                    @unlink($core_log);
+                $upload_dir = wp_upload_dir();
+                if (isset($upload_dir['basedir'])) {
+                    $log_dir = $upload_dir['basedir'] . '/omegadrive-logs';
+                    $debug_log = $log_dir . '/debug.log';
+                    $core_log = $log_dir . '/core_debug.log';
+                    if (file_exists($debug_log)) {
+                        wp_delete_file($debug_log);
+                    }
+                    if (file_exists($core_log)) {
+                        wp_delete_file($core_log);
+                    }
                 }
             }
         }, 10, 2);
@@ -62,6 +75,8 @@ class Omega_Ecommerce_Pro {
         if (is_admin()) {
             add_action('admin_menu', [$this, 'admin_menu']);
             add_action('admin_init', [$this, 'register_settings']);
+            add_filter('plugin_row_meta', [$this, 'plugin_row_meta'], 10, 2);
+            add_filter('plugin_action_links_' . plugin_basename(__FILE__), [$this, 'plugin_action_links']);
 
             // Speed up WooCommerce & WordPress Admin Dashboard
             if (get_option('omega_disable_analytics', 0)) {
@@ -91,6 +106,21 @@ class Omega_Ecommerce_Pro {
 
     public function admin_menu() {
         add_options_page('OmegaDrive Settings', 'OmegaDrive', 'manage_options', 'omegadrive-settings', [$this, 'settings_page']);
+    }
+
+    public function plugin_row_meta($links, $file) {
+        if ($file === plugin_basename(__FILE__)) {
+            $links[] = '<a href="https://github.com/BlackHoleDevs/wp-omega-cache" target="_blank" rel="noopener noreferrer">' . esc_html__('GitHub (Open Source)', 'omega-ecommerce-pro') . '</a>';
+        }
+        return $links;
+    }
+
+    public function plugin_action_links($links) {
+        $settings_link = '<a href="options-general.php?page=omegadrive-settings">' . esc_html__('Settings', 'omega-ecommerce-pro') . '</a>';
+        $github_link = '<a href="https://github.com/BlackHoleDevs/wp-omega-cache" target="_blank" rel="noopener noreferrer">' . esc_html__('GitHub (Open Source)', 'omega-ecommerce-pro') . '</a>';
+        array_unshift($links, $settings_link);
+        $links[] = $github_link;
+        return $links;
     }
 
     public function register_settings() {
@@ -569,7 +599,8 @@ class Omega_Ecommerce_Pro {
 
     public function start_buffer() {
         if ($this->is_bypass_request()) return;
-        $this->log_debug("2. START BUFFER CALLED. URI: " . (isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : ''));
+        $request_uri = isset($_SERVER['REQUEST_URI']) ? esc_url_raw(wp_unslash($_SERVER['REQUEST_URI'])) : '';
+        $this->log_debug("2. START BUFFER CALLED. URI: " . $request_uri);
         ob_start([$this, 'buffer_callback']);
     }
 
