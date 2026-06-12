@@ -1,5 +1,5 @@
 === OmegaDrive E-Commerce Pro ===
-Contributors: OmegaDrive
+Contributors: exmoond
 Tags: woocommerce, performance, cache, speed, omega-drive
 Requires at least: 5.6
 Tested up to: 7.0
@@ -7,21 +7,21 @@ Stable tag: 1.5.0
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
-Hyper-Early caching engine powered by OmegaDrive shared-nothing fast key-value storage and high-speed reversed-proxy server.
+Page caching and front-end optimization engine integrated with the OmegaDrive key-value database and a companion reverse-proxy server.
 
 == Description ==
 
-**OmegaDrive E-Commerce Pro** is a state-of-the-art caching and front-end optimization engine designed from the ground up for high-performance WooCommerce stores. It harnesses the power of the **OmegaDrive shared-nothing database technology** combined with a high-performance companion reverse-proxy (written in Rust) to deliver web pages at a blistering speed.
+**OmegaDrive E-Commerce Pro** is a caching and front-end optimization engine designed for WooCommerce stores. It integrates with the **OmegaDrive key-value database** and a companion reverse-proxy (written in Rust) to optimize page delivery and reduce load times.
 
-Under standard high-concurrency benchmarks, this architecture achieves an unprecedented **43,000+ Requests Per Second (RPS)** with a median latency of **under 9ms** on a single core!
+Under standard benchmark testing, this architecture can serve up to **43,000+ Requests Per Second (RPS)** with a median latency of **under 9ms** on a single core.
 
 ### Key Features:
-*   **Hyper-Early Page Caching:** Bypasses WordPress, Apache, and the PHP runtime entirely for cached hits. Caches pages in gzipped binary format inside the ultra-fast OmegaDrive RAM key-value store.
-*   **Automatic CSS Inliner:** Detects critical and non-critical stylesheets and dynamically inlines them into the HTML, eliminating multiple round-trip render-blocking requests and boosting First Contentful Paint (FCP).
-*   **Speculative Preloading:** Integrated speculative preloader module (instant.page) that initiates page prefetching on user hover/touchstart, resulting in near 0ms client-side page transitions.
-*   **Next-Gen Image Optimization:** Automatic on-the-fly rewriting of all upload image source URLs to modern Next-Gen WebP formats.
-*   **LCP Fetchpriority Optimization:** Identifies post/product featured images and automatically injects responsive preload links into the `<head>` tag alongside `fetchpriority="high"`, drastically reducing Largest Contentful Paint (LCP) time.
-*   **Aria-Label & Accessibility Injection:** Automatically repairs empty tags and missing WooCommerce accessibility fields, increasing Lighthouse accessibility score to 100%.
+*   **Page Caching:** Serves pages directly from the OmegaDrive in-memory key-value store in gzipped binary format.
+*   **Automatic CSS Inliner:** Detects critical and non-critical stylesheets and dynamically inlines them into the HTML, reducing render-blocking requests and improving First Contentful Paint (FCP).
+*   **Speculative Preloading:** Integrates a preloader module (instant.page) that initiates page prefetching on user hover/touchstart.
+*   **Next-Gen Image Optimization:** Automates rewriting of upload image source URLs to WebP format.
+*   **LCP Fetchpriority Optimization:** Identifies post/product featured images and injects responsive preload links into the `<head>` tag with `fetchpriority="high"`, reducing Largest Contentful Paint (LCP) time.
+*   **Aria-Label & Accessibility Injection:** Automates empty tags and missing WooCommerce accessibility fields cleanup to improve accessibility scores.
 
 == Installation ==
 
@@ -48,10 +48,25 @@ While the plugin will perform inlining and front-end optimizations on its own, t
 = How does the plugin handle dynamic checkout pages? =
 The plugin has an integrated bypass engine (`is_bypass_request`) that automatically detects and excludes WooCommerce Cart, Checkout, My Account, AJAX fragments (`wc-ajax=`), and REST API requests from being cached, ensuring a fully transactional and bug-free shopping experience for customers.
 
-== Screenshots ==
+== Troubleshooting Connection Issues ==
 
-1. The Admin Options page allowing configuration of the OmegaDrive Database Host.
-2. Visual representation of First Contentful Paint (FCP) and LCP improvements after activation.
+If the plugin indicates "OmegaDrive database disconnected", it means the WordPress server cannot reach the OmegaDrive daemon. Here are quick steps to resolve this:
+1.  **Verify the Daemon is Running:**
+    Ensure the Rust server is active:
+    ```bash
+    ps aux | grep neural_web_server
+    ```
+2.  **Check Network Reachability:**
+    From your WordPress server (or Docker container), try to ping the database host:
+    ```bash
+    ping <omega_database_host>
+    ```
+    If using Docker, ensure the WordPress container can communicate with the OmegaDrive container (e.g., by using the internal Docker network alias).
+3.  **Verify Port Access:**
+    Use `telnet` or `nc` to check if port `6380` is open:
+    ```bash
+    nc -zv <omega_database_host> 6380
+    ```
 
 == Changelog ==
 

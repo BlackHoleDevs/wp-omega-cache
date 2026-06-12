@@ -10,8 +10,6 @@
 
 if (!defined('ABSPATH')) exit;
 
-opcache_reset();
-
 require_once plugin_dir_path(__FILE__) . 'includes/class-omega-connector.php';
 
 class Omega_Ecommerce_Pro {
@@ -37,7 +35,24 @@ class Omega_Ecommerce_Pro {
     public function __construct() {
         $has_fired = function_exists('did_action') && did_action('plugins_loaded');
         $host = get_option('omega_drive_host', '172.19.0.1');
-        $this->connector = new Omega_Connector($host, 6380);
+
+        $offline = false;
+        if (!is_admin() && function_exists('get_transient')) {
+            if (get_transient('omega_drive_offline')) {
+                $offline = true;
+            }
+        }
+
+        if ($offline) {
+            $this->connector = null;
+        } else {
+            $this->connector = new Omega_Connector($host, 6380);
+            if ($this->connector->connection_error) {
+                if (!is_admin() && function_exists('set_transient')) {
+                    set_transient('omega_drive_offline', '1', 15);
+                }
+            }
+        }
 
         $this->log_debug("1. CONSTRUCT CALLED");
         $request_uri = isset($_SERVER['REQUEST_URI']) ? esc_url_raw(wp_unslash($_SERVER['REQUEST_URI'])) : '';
@@ -51,6 +66,7 @@ class Omega_Ecommerce_Pro {
             add_action('plugins_loaded', [$this, 'serve_cache'], 0);
             add_action('plugins_loaded', [$this, 'start_buffer'], 1);
         }
+        add_action('shutdown', [$this, 'end_buffer'], 9999);
         
         add_filter('script_loader_tag', [$this, 'defer_scripts'], 10, 3);
         add_action('wp_enqueue_scripts', [$this, 'dequeue_unneeded_scripts'], 9999);
@@ -72,8 +88,15 @@ class Omega_Ecommerce_Pro {
             }
         }, 10, 2);
 
+        add_action('update_option_omega_drive_host', function() {
+            if (function_exists('delete_transient')) {
+                delete_transient('omega_drive_offline');
+            }
+        });
+
         if (is_admin()) {
             add_action('admin_menu', [$this, 'admin_menu']);
+            add_action('admin_enqueue_scripts', [$this, 'admin_enqueue_styles']);
             add_action('admin_init', [$this, 'register_settings']);
             add_filter('plugin_row_meta', [$this, 'plugin_row_meta'], 10, 2);
             add_filter('plugin_action_links_' . plugin_basename(__FILE__), [$this, 'plugin_action_links']);
@@ -106,6 +129,12 @@ class Omega_Ecommerce_Pro {
 
     public function admin_menu() {
         add_options_page('OmegaDrive Settings', 'OmegaDrive', 'manage_options', 'omegadrive-settings', [$this, 'settings_page']);
+    }
+
+    public function admin_enqueue_styles($hook) {
+        if ($hook === 'settings_page_omegadrive-settings') {
+            wp_enqueue_style('omega-admin-css', plugins_url('css/admin.css', __FILE__), array(), '1.5.0');
+        }
     }
 
     public function plugin_row_meta($links, $file) {
@@ -152,6 +181,9 @@ class Omega_Ecommerce_Pro {
             if ($val === '1') {
                 $ping_success = true;
                 $latency = round((microtime(true) - $start) * 1000, 2);
+                if (function_exists('delete_transient')) {
+                    delete_transient('omega_drive_offline');
+                }
             }
         }
 
@@ -159,6 +191,9 @@ class Omega_Ecommerce_Pro {
         // phpcs:ignore WordPress.Security.NonceVerification.Recommended
         if (isset($_POST['omega_flush_db_btn'])) {
             check_admin_referer('omega_flush_db_action', 'omega_flush_db_nonce');
+            if (function_exists('delete_transient')) {
+                delete_transient('omega_drive_offline');
+            }
             if ($this->connector) {
                 if ($this->connector->flush()) {
                     $flush_status = 'success';
@@ -168,194 +203,7 @@ class Omega_Ecommerce_Pro {
             }
         }
         ?>
-        <style>
-            .omega-dashboard {
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
-                background: #0f172a;
-                color: #f8fafc;
-                border-radius: 12px;
-                padding: 24px;
-                max-width: 800px;
-                margin: 20px 0;
-                box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
-            }
-            .omega-header {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                border-bottom: 1px solid #334155;
-                padding-bottom: 16px;
-                margin-bottom: 24px;
-            }
-            .omega-title {
-                font-size: 24px;
-                font-weight: 700;
-                margin: 0;
-                background: linear-gradient(135deg, #a78bfa 0%, #3b82f6 100%);
-                -webkit-background-clip: text;
-                -webkit-text-fill-color: transparent;
-            }
-            .omega-badge {
-                padding: 6px 12px;
-                border-radius: 20px;
-                font-size: 12px;
-                font-weight: 600;
-                display: flex;
-                align-items: center;
-                gap: 6px;
-            }
-            .omega-badge-success {
-                background: rgba(16, 185, 129, 0.15);
-                color: #34d399;
-                border: 1px solid rgba(16, 185, 129, 0.3);
-            }
-            .omega-badge-error {
-                background: rgba(239, 68, 68, 0.15);
-                color: #f87171;
-                border: 1px solid rgba(239, 68, 68, 0.3);
-            }
-            .omega-section {
-                background: #1e293b;
-                border-radius: 8px;
-                padding: 20px;
-                margin-bottom: 20px;
-                border: 1px solid #334155;
-            }
-            .omega-section-title {
-                font-size: 16px;
-                font-weight: 600;
-                margin-top: 0;
-                margin-bottom: 16px;
-                color: #e2e8f0;
-            }
-            .omega-row {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                padding: 14px 0;
-                border-bottom: 1px solid #334155;
-            }
-            .omega-row:last-child {
-                border-bottom: none;
-            }
-            .omega-label {
-                font-weight: 600;
-                color: #f1f5f9;
-                font-size: 14px;
-            }
-            .omega-desc {
-                font-size: 12px;
-                color: #94a3b8;
-                margin-top: 4px;
-                max-width: 500px;
-            }
-            .omega-input-text {
-                background: #0f172a !important;
-                border: 1px solid #475569 !important;
-                color: #f8fafc !important;
-                border-radius: 6px !important;
-                padding: 8px 12px !important;
-                font-size: 14px !important;
-                width: 200px;
-                transition: border-color 0.2s, box-shadow 0.2s;
-            }
-            .omega-input-text:focus {
-                border-color: #8b5cf6 !important;
-                box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.25) !important;
-                outline: none !important;
-            }
-            .omega-toggle-switch {
-                position: relative;
-                display: inline-block;
-                width: 48px;
-                height: 24px;
-            }
-            .omega-toggle-switch input {
-                opacity: 0;
-                width: 0;
-                height: 0;
-            }
-            .omega-toggle-slider {
-                position: absolute;
-                cursor: pointer;
-                top: 0;
-                left: 0;
-                right: 0;
-                bottom: 0;
-                background-color: #475569;
-                transition: .3s;
-                border-radius: 24px;
-            }
-            .omega-toggle-slider:before {
-                position: absolute;
-                content: "";
-                height: 18px;
-                width: 18px;
-                left: 3px;
-                bottom: 3px;
-                background-color: white;
-                transition: .3s;
-                border-radius: 50%;
-            }
-            input:checked + .omega-toggle-slider {
-                background-color: #8b5cf6;
-            }
-            input:checked + .omega-toggle-slider:before {
-                transform: translateX(24px);
-            }
-            .omega-select {
-                background: #0f172a !important;
-                color: #f8fafc !important;
-                border: 1px solid #475569 !important;
-                border-radius: 6px !important;
-                padding: 6px 12px !important;
-                font-size: 14px !important;
-                outline: none !important;
-                height: auto !important;
-            }
-            .omega-btn-submit {
-                background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%) !important;
-                color: #ffffff !important;
-                border: none !important;
-                border-radius: 6px !important;
-                padding: 10px 24px !important;
-                font-size: 14px !important;
-                font-weight: 600 !important;
-                cursor: pointer !important;
-                transition: transform 0.1s, box-shadow 0.2s !important;
-                box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3) !important;
-                text-shadow: none !important;
-            }
-            .omega-btn-submit:hover {
-                transform: translateY(-1px);
-                box-shadow: 0 6px 16px rgba(139, 92, 246, 0.4) !important;
-                color: #ffffff !important;
-            }
-            .omega-btn-submit:active {
-                transform: translateY(0);
-            }
-            .omega-btn-danger {
-                background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%) !important;
-                color: #ffffff !important;
-                border: none !important;
-                border-radius: 6px !important;
-                padding: 10px 24px !important;
-                font-size: 14px !important;
-                font-weight: 600 !important;
-                cursor: pointer !important;
-                transition: transform 0.1s, box-shadow 0.2s !important;
-                box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3) !important;
-                text-shadow: none !important;
-            }
-            .omega-btn-danger:hover {
-                transform: translateY(-1px);
-                box-shadow: 0 6px 16px rgba(239, 68, 68, 0.4) !important;
-                color: #ffffff !important;
-            }
-            .omega-btn-danger:active {
-                transform: translateY(0);
-            }
-        </style>
+
         <div class="omega-dashboard">
             <div class="omega-header">
                 <h1 class="omega-title">OmegaDrive E-Commerce Pro</h1>
@@ -381,6 +229,12 @@ class Omega_Ecommerce_Pro {
             <?php elseif ($flush_status === 'error') : ?>
                 <div style="background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.3); color: #f87171; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; font-size: 14px;">
                     <strong>Error:</strong> Failed to flush OmegaDrive database cache.
+                </div>
+            <?php endif; ?>
+
+            <?php if (!$ping_success) : ?>
+                <div style="background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.3); color: #f59e0b; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; font-size: 14px; line-height: 1.5;">
+                    <strong>Notice:</strong> OmegaDrive database is offline. Page Caching is bypassed (we highly recommend connecting Omega for maximum performance). However, all Frontend Optimizations (CSS Inlining, LCP Preloading, WebP Conversion, etc.) remain active!
                 </div>
             <?php endif; ?>
             
@@ -524,6 +378,9 @@ class Omega_Ecommerce_Pro {
     }
 
     public function serve_cache() {
+        if (!$this->connector || !empty($this->connector->connection_error)) {
+            return;
+        }
         $request_uri = isset($_SERVER['REQUEST_URI']) ? esc_url_raw(wp_unslash($_SERVER['REQUEST_URI'])) : '/';
 
         // Check for assets requests first, bypassing standard page caching logic
@@ -604,6 +461,12 @@ class Omega_Ecommerce_Pro {
         ob_start([$this, 'buffer_callback']);
     }
 
+    public function end_buffer() {
+        if (ob_get_level() > 0) {
+            @ob_end_flush();
+        }
+    }
+
     public function buffer_callback($content) {
         if ($this->is_bypass_request()) return $content;
         
@@ -637,20 +500,12 @@ class Omega_Ecommerce_Pro {
                 $clean_url = explode('?', $url)[0];
                 
                 // Dopasuj tylko lokalne ścieżki wp-content lub wp-includes
-                if (strpos($clean_url, '/wp-content/') !== false || strpos($clean_url, '/wp-includes/') !== false) {
-                    $local_subpath = '';
-                    if (strpos($clean_url, '/wp-content/') !== false) {
-                        $local_subpath = '/wp-content/' . explode('/wp-content/', $clean_url)[1];
-                    } else if (strpos($clean_url, '/wp-includes/') !== false) {
-                        $local_subpath = '/wp-includes/' . explode('/wp-includes/', $clean_url)[1];
-                    }
+                    $filesystem_path = $this->url_to_local_path($clean_url);
                     
-                    $filesystem_path = '/var/www/html' . $local_subpath;
-                    
-                    if (file_exists($filesystem_path)) {
+                    if (!empty($filesystem_path) && file_exists($filesystem_path)) {
                         $css_content = @file_get_contents($filesystem_path);
                         if ($css_content && strlen($css_content) < 80000) { // Limit 80KB na plik
-                            $base_path = dirname($local_subpath) . '/';
+                            $base_path = dirname(wp_parse_url($clean_url, PHP_URL_PATH)) . '/';
                             
                             // Korekta ścieżek relatywnych wewnątrz CSS
                             $css_content = preg_replace_callback(
@@ -672,7 +527,6 @@ class Omega_Ecommerce_Pro {
                     }
                 }
             }
-        }
 
         $cache_key = 'hyper_matrix:' . md5($http_host . $request_uri);
         
@@ -751,14 +605,8 @@ class Omega_Ecommerce_Pro {
             // Determine if it is a local file and find the local path
             $local_file_path = '';
             if (empty($host) || stripos($host, $current_host) !== false || stripos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false) {
-                $site_path = wp_parse_url(site_url(), PHP_URL_PATH) ?: '';
-                $site_path = rtrim($site_path, '/');
-                $relative_path = $path;
-                if (!empty($site_path) && strpos($path, $site_path) === 0) {
-                    $relative_path = substr($path, strlen($site_path));
-                }
-                $abspath_file = ABSPATH . ltrim($relative_path, '/');
-                if (file_exists($abspath_file)) {
+                $abspath_file = $this->url_to_local_path($url);
+                if (!empty($abspath_file) && file_exists($abspath_file)) {
                     $local_file_path = $abspath_file;
                 }
             }
@@ -809,14 +657,8 @@ class Omega_Ecommerce_Pro {
                         
                         $sub_local_file = '';
                         if (empty($sub_host) || stripos($sub_host, $current_host) !== false || stripos($sub_host, 'localhost') !== false) {
-                            $sub_site_path = wp_parse_url(site_url(), PHP_URL_PATH) ?: '';
-                            $sub_site_path = rtrim($sub_site_path, '/');
-                            $sub_relative = $sub_path;
-                            if (!empty($sub_site_path) && strpos($sub_path, $sub_site_path) === 0) {
-                                $sub_relative = substr($sub_path, strlen($sub_site_path));
-                            }
-                            $sub_abspath = ABSPATH . ltrim($sub_relative, '/');
-                            if (file_exists($sub_abspath)) {
+                            $sub_abspath = $this->url_to_local_path($sub_resolved_url);
+                            if (!empty($sub_abspath) && file_exists($sub_abspath)) {
                                 $sub_local_file = $sub_abspath;
                             }
                         }
@@ -876,14 +718,8 @@ class Omega_Ecommerce_Pro {
             // Determine local file path
             $local_file_path = '';
             if (empty($host) || stripos($host, $current_host) !== false || stripos($host, 'localhost') !== false || strpos($host, '127.0.0.1') !== false) {
-                $site_path = wp_parse_url(site_url(), PHP_URL_PATH) ?: '';
-                $site_path = rtrim($site_path, '/');
-                $relative_path = $path;
-                if (!empty($site_path) && strpos($path, $site_path) === 0) {
-                    $relative_path = substr($path, strlen($site_path));
-                }
-                $abspath_file = ABSPATH . ltrim($relative_path, '/');
-                if (file_exists($abspath_file)) {
+                $abspath_file = $this->url_to_local_path($url);
+                if (!empty($abspath_file) && file_exists($abspath_file)) {
                     $local_file_path = $abspath_file;
                 }
             }
@@ -963,7 +799,6 @@ class Omega_Ecommerce_Pro {
         // 1. Auto-Alt, Lazy Loading, Async Decoding & CLS Prevention for Images
         $img_count = 0;
         $content = preg_replace_callback('/<img\s+([^>]+)>/i', function($m) use (&$img_count) {
-            $img_count++;
             $attrs_str = $m[1];
             
             // Ultra-fast Next-Gen WebP rewriting for all image source attributes
@@ -1010,9 +845,8 @@ class Omega_Ecommerce_Pro {
                     $img_url = $src_matches[1];
                     // Jeśli to lokalny plik z wp-content, odczytaj rzeczywiste wymiary z dysku
                     if (strpos($img_url, '/wp-content/') !== false) {
-                        $parsed_img = wp_parse_url($img_url);
-                        $local_img_path = ABSPATH . ltrim($parsed_img['path'] ?? '', '/');
-                        if (file_exists($local_img_path) && $size = @getimagesize($local_img_path)) {
+                        $local_img_path = $this->url_to_local_path($img_url);
+                        if (!empty($local_img_path) && file_exists($local_img_path) && $size = @getimagesize($local_img_path)) {
                             if (stripos($attrs_str, 'width=') === false) {
                                 $attrs_str .= ' width="' . $size[0] . '"';
                             }
@@ -1025,18 +859,30 @@ class Omega_Ecommerce_Pro {
             }
 
             // CRITICAL LCP OPTIMIZATION:
-            // Do NOT lazy load the first 2 images. Instead, give them fetchpriority="high".
-            // For other images, add loading="lazy".
-            if ($img_count <= 2) {
-                // Remove loading="lazy" if present
-                $attrs_str = preg_replace('/\s*loading=["\']?lazy["\']?/i', '', $attrs_str);
-                if (stripos($attrs_str, 'fetchpriority=') === false) {
-                    $attrs_str .= ' fetchpriority="high"';
+            // Do NOT count gravatars, avatars, or small icon images as LCP candidates.
+            $is_lcp_candidate = true;
+            if (stripos($attrs_str, 'avatar') !== false || stripos($attrs_str, 'gravatar') !== false || stripos($attrs_str, 'icon') !== false) {
+                $is_lcp_candidate = false;
+            }
+
+            if ($is_lcp_candidate) {
+                $img_count++;
+                if ($img_count <= 2) {
+                    // Do NOT lazy load the first 2 images. Instead, give them fetchpriority="high".
+                    $attrs_str = preg_replace('/\s*loading=["\']?lazy["\']?/i', '', $attrs_str);
+                    if (stripos($attrs_str, 'fetchpriority=') === false) {
+                        $attrs_str .= ' fetchpriority="high"';
+                    }
+                } else {
+                    // Remaining images: add loading="lazy", and make sure we don't keep fetchpriority="high".
+                    $attrs_str = preg_replace('/\s*fetchpriority=["\']?high["\']?/i', '', $attrs_str);
+                    if (stripos($attrs_str, 'loading=') === false) {
+                        $attrs_str .= ' loading="lazy"';
+                    }
                 }
             } else {
-                if (stripos($attrs_str, 'loading=') === false) {
-                    $attrs_str .= ' loading="lazy"';
-                }
+                // If it is an avatar/icon, it is definitely not LCP. Remove fetchpriority if present.
+                $attrs_str = preg_replace('/\s*fetchpriority=["\']?high["\']?/i', '', $attrs_str);
             }
             
             return '<img ' . trim($attrs_str) . $suffix . '>';
@@ -1181,11 +1027,12 @@ class Omega_Ecommerce_Pro {
             }
         }
 
-        if ($this->connector->connection_error) {
+        if (!$this->connector || !empty($this->connector->connection_error)) {
+            $err_msg = $this->connector ? $this->connector->connection_error : 'OmegaDrive daemon not connected';
             // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
-            error_log("OmegaDrive: Connection Error: " . $this->connector->connection_error);
-            $this->log_debug("3a. CONNECTION ERROR: " . $this->connector->connection_error);
-            return $content . "\n<!-- OmegaDrive Hyper-Early Cache | ERROR: " . $this->connector->connection_error . " -->";
+            error_log("OmegaDrive: Cache Bypassed: " . $err_msg);
+            $this->log_debug("3a. CACHE BYPASSED (OPTIMIZATION ACTIVE): " . $err_msg);
+            return $content . "\n<!-- OmegaDrive Frontend Optimization | Status: Active (Cache Bypassed - Daemon Offline) -->";
         }
         
         $gzipped_content = gzencode($content, 9);
@@ -1257,14 +1104,8 @@ class Omega_Ecommerce_Pro {
         }
 
         $site_path = wp_parse_url(site_url(), PHP_URL_PATH) ?: '';
-        $site_path = rtrim($site_path, '/');
-        $relative_path = $path;
-        if (!empty($site_path) && strpos($path, $site_path) === 0) {
-            $relative_path = substr($path, strlen($site_path));
-        }
-
-        $local_file_path = ABSPATH . ltrim($relative_path, '/');
-        if (!file_exists($local_file_path)) {
+        $local_file_path = $this->url_to_local_path($url);
+        if (empty($local_file_path) || !file_exists($local_file_path)) {
             return $url;
         }
 
@@ -1326,6 +1167,42 @@ class Omega_Ecommerce_Pro {
         $js = preg_replace('/^[\r\n\s]+$/m', '', $js);
         $js = preg_replace('/[\r\n]+/', "\n", $js);
         return trim($js);
+    }
+
+    private function url_to_local_path($url) {
+        if (strpos($url, 'http') !== 0 && strpos($url, '//') !== 0) {
+            $url = site_url('/' . ltrim($url, '/'));
+        }
+        $upload_dir = wp_upload_dir();
+        if (isset($upload_dir['error']) && $upload_dir['error'] !== false) {
+            return '';
+        }
+        $base_url = $upload_dir['baseurl'];
+        $base_dir = $upload_dir['basedir'];
+        
+        $normalized_url = preg_replace('/^https?:/i', '', $url);
+        $normalized_base_url = preg_replace('/^https?:/i', '', $base_url);
+        
+        if (strpos($normalized_url, $normalized_base_url) === 0) {
+            $relative_path = substr($normalized_url, strlen($normalized_base_url));
+            return $base_dir . $relative_path;
+        }
+        
+        $content_url = content_url();
+        $normalized_content_url = preg_replace('/^https?:/i', '', $content_url);
+        if (strpos($normalized_url, $normalized_content_url) === 0) {
+            $relative_path = substr($normalized_url, strlen($normalized_content_url));
+            return WP_CONTENT_DIR . $relative_path;
+        }
+        
+        $site_url = site_url();
+        $normalized_site_url = preg_replace('/^https?:/i', '', $site_url);
+        if (strpos($normalized_url, $normalized_site_url) === 0) {
+            $relative_path = substr($normalized_url, strlen($normalized_site_url));
+            return ABSPATH . ltrim($relative_path, '/');
+        }
+        
+        return '';
     }
 }
 

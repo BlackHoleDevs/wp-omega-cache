@@ -10,6 +10,16 @@ class Omega_Connector {
     public $connection_error = '';
 
     public function __construct($fallback_host = '172.19.0.1', $port = 6380) {
+        $is_offline = false;
+        if (!is_admin() && function_exists('get_transient')) {
+            $is_offline = get_transient('omega_drive_offline');
+        }
+        
+        if ($is_offline) {
+            $this->connection_error = 'Offline (Bypassed)';
+            return;
+        }
+
         // Try UDS first (Linux High Performance)
         if (file_exists('/tmp/airdb.sock')) {
             // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fsockopen
@@ -27,6 +37,9 @@ class Omega_Connector {
             $this->is_uds = false;
         } else {
             $this->connection_error = "TCP Connection Failed to $fallback_host:$port - ($errno) $errstr";
+            if (!is_admin() && function_exists('set_transient')) {
+                set_transient('omega_drive_offline', 1, 15);
+            }
         }
     }
 

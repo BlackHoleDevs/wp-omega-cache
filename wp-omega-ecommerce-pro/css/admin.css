@@ -1,0 +1,187 @@
+.omega-dashboard {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+    background: #0f172a;
+    color: #f8fafc;
+    border-radius: 12px;
+    padding: 24px;
+    max-width: 800px;
+    margin: 20px 0;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
+}
+.omega-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #334155;
+    padding-bottom: 16px;
+    margin-bottom: 24px;
+}
+.omega-title {
+    font-size: 24px;
+    font-weight: 700;
+    margin: 0;
+    background: linear-gradient(135deg, #a78bfa 0%, #3b82f6 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+.omega-badge {
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.omega-badge-success {
+    background: rgba(16, 185, 129, 0.15);
+    color: #34d399;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+.omega-badge-error {
+    background: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+}
+.omega-section {
+    background: #1e293b;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 20px;
+    border: 1px solid #334155;
+}
+.omega-section-title {
+    font-size: 16px;
+    font-weight: 600;
+    margin-top: 0;
+    margin-bottom: 16px;
+    color: #e2e8f0;
+}
+.omega-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 0;
+    border-bottom: 1px solid #334155;
+}
+.omega-row:last-child {
+    border-bottom: none;
+}
+.omega-label {
+    font-weight: 600;
+    color: #f1f5f9;
+    font-size: 14px;
+}
+.omega-desc {
+    font-size: 12px;
+    color: #94a3b8;
+    margin-top: 4px;
+    max-width: 500px;
+}
+.omega-input-text {
+    background: #0f172a !important;
+    border: 1px solid #475569 !important;
+    color: #f8fafc !important;
+    border-radius: 6px !important;
+    padding: 8px 12px !important;
+    font-size: 14px !important;
+    width: 200px;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+.omega-input-text:focus {
+    border-color: #8b5cf6 !important;
+    box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.25) !important;
+    outline: none !important;
+}
+.omega-toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 48px;
+    height: 24px;
+}
+.omega-toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+.omega-toggle-slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #475569;
+    transition: .3s;
+    border-radius: 24px;
+}
+.omega-toggle-slider:before {
+    position: absolute;
+    content: "";
+    height: 18px;
+    width: 18px;
+    left: 3px;
+    bottom: 3px;
+    background-color: white;
+    transition: .3s;
+    border-radius: 50%;
+}
+input:checked + .omega-toggle-slider {
+    background-color: #8b5cf6;
+}
+input:checked + .omega-toggle-slider:before {
+    transform: translateX(24px);
+}
+.omega-select {
+    background: #0f172a !important;
+    color: #f8fafc !important;
+    border: 1px solid #475569 !important;
+    border-radius: 6px !important;
+    padding: 6px 12px !important;
+    font-size: 14px !important;
+    outline: none !important;
+    height: auto !important;
+}
+.omega-btn-submit {
+    background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%) !important;
+    color: #ffffff !important;
+    border: none !important;
+    border-radius: 6px !important;
+    padding: 10px 24px !important;
+    font-size: 14px !important;
+    font-weight: 600 !important;
+    cursor: pointer !important;
+    transition: transform 0.1s, box-shadow 0.2s !important;
+    box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3) !important;
+    text-shadow: none !important;
+}
+.omega-btn-submit:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 16px rgba(139, 92, 246, 0.4) !important;
+    color: #ffffff !important;
+}
+.omega-btn-submit:active {
+    transform: translateY(0);
+}
+.omega-btn-danger {
+    background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%) !important;
+    color: #ffffff !important;
+    border: none !important;
+    border-radius: 6px !important;
+    padding: 10px 24px !important;
+    font-size: 14px !important;
+    font-weight: 600 !important;
+    cursor: pointer !important;
+    transition: transform 0.1s, box-shadow 0.2s !important;
+    box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3) !important;
+    text-shadow: none !important;
+}
+.omega-btn-danger:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 16px rgba(239, 68, 68, 0.4) !important;
+    color: #ffffff !important;
+}
+.omega-btn-danger:active {
+    transform: translateY(0);
+}
